@@ -153,7 +153,13 @@ publicShareRouter.get(
           tags: i.tags,
           fuzz: i.spot?.fuzz ?? null,
           anchor: i.timing?.timeAnchor ?? null,
-          assets: i.assets.map((a) => ({ id: a.id, width: a.width, height: a.height, url: `/api/share/${link.token}/assets/${a.id}` })),
+          assets: i.assets.map((a) => ({
+            id: a.id,
+            version: a.contentVersion,
+            width: a.width,
+            height: a.height,
+            url: `/api/share/${link.token}/assets/${a.id}?v=${a.contentVersion}`,
+          })),
         })),
         notice: '内容随时可能失效；地点已按分享级别模糊化。',
       });
@@ -173,7 +179,13 @@ publicShareRouter.get(
         tags: dto.tags,
         fuzz: dto.spot?.fuzz ?? null,
         anchor: dto.timing?.timeAnchor ?? null,
-        assets: dto.assets.map((a) => ({ id: a.id, width: a.width, height: a.height, url: `/api/share/${link.token}/assets/${a.id}` })),
+        assets: dto.assets.map((a) => ({
+          id: a.id,
+          version: a.contentVersion,
+          width: a.width,
+          height: a.height,
+          url: `/api/share/${link.token}/assets/${a.id}?v=${a.contentVersion}`,
+        })),
       },
       notice: '内容随时可能失效；地点已按分享级别模糊化。',
     });
@@ -205,10 +217,23 @@ publicShareRouter.get(
       throw errors.scopeDenied();
     }
 
+    // 版本校验：旧 URL（替换原图前生成）不再返回任何图片字节，迫使其重新拉取分享载荷
+    const askedVersion = req.query.v ? Number(req.query.v) : null;
+    if (askedVersion !== null && Number.isFinite(askedVersion) && askedVersion !== asset.content_version) {
+      logAccess(link.id, false, 'asset_version_stale');
+      res.status(409).json({
+        error: { code: 'ASSET_VERSION_STALE', message: '原图已替换，请重新获取分享内容', details: {} },
+      });
+      return;
+    }
+
     const target = await shareImageFor(asset, link.library_id);
     if (!fs.existsSync(target)) throw errors.notFound('图片文件');
     logAccess(link.id, true);
-    res.sendFile(target);
+    // 分享图可随时被撤销/替换：禁止浏览器与中间层缓存图片字节
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Pragma', 'no-cache');
+    res.sendFile(target, { cacheControl: false, lastModified: false });
   }),
 );
 

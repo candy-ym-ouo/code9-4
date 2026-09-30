@@ -73,5 +73,7 @@ export function upload<T>(path: string, files: File[], extra: Record<string, str
 /** 图片 URL 需要携带鉴权（<img> 无法带 header，所以用查询参数） */
 export function authedImageUrl(path: string): string {
   const token = useSession.getState().token;
-  return token ? `${BASE}${path}?token=${encodeURIComponent(token)}` : `${BASE}${path}`;
+  if (!token) return `${BASE}${path}`;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${BASE}${path}${sep}token=${encodeURIComponent(token)}`;
 }

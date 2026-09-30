@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import fs from 'node:fs';
 import { z } from 'zod';
@@ -34,7 +34,7 @@ import {
 } from '../services/inspirations.js';
 import { toAssetDto, toAnnotationDto, toInspirationDto, toSpotDto } from '../services/serialization.js';
 import type { SerializeContext } from '../services/serialization.js';
-import { ingestAsset, type AssetRow } from '../services/assets.js';
+import { ingestAsset, replaceAssetImage, deleteShareImages, releaseBlobIfOrphan, type AssetRow } from '../services/assets.js';
 import { clearFuzzCache, loadSpotRow } from '../services/fuzzing.js';
 import { loadSpotGeom } from '../services/windowEngine.js';
 import { azimuthAt, elevationAt, utcToZonedParts, zonedTimeToUtc } from '@flil/shared';
@@ -279,7 +279,6 @@ inspirationRouter.post(
           libraryId: ctx.libraryId,
           inspirationId: row.id,
           role,
-          filename: file.originalname,
           buffer: file.buffer,
           spot: spot ? { lat: spot.lat, lng: spot.lng, tz: spot.tz } : null,
         }),
@@ -297,13 +296,28 @@ function loadAsset(assetId: string, libraryId: string): AssetRow {
   return row;
 }
 
+/**
+ * 私有图片：不允许共享缓存（private, no-cache），并以内容版本作为 ETag。
+ * 替换原图 → content_version 自增 → ETag 变化，浏览器与中间层都不会继续用旧缓存。
+ */
+function sendPrivateFile(req: Request, res: Response, file: string, version: number): void {
+  const etag = `"v${version}"`;
+  res.setHeader('Cache-Control', 'private, no-cache');
+  res.setHeader('ETag', etag);
+  if (req.headers['if-none-match'] === etag) {
+    res.status(304).end();
+    return;
+  }
+  if (!fs.existsSync(file)) throw errors.notFound('图片文件');
+  res.sendFile(file, { cacheControl: false, lastModified: false });
+}
+
 inspirationRouter.get(
   '/assets/:id/file',
   ah(async (req, res) => {
     const ctx = ctxOf(req);
     const row = loadAsset(req.params.id, ctx.libraryId);
-    if (!fs.existsSync(row.file_path)) throw errors.notFound('图片文件');
-    res.sendFile(row.file_path);
+    sendPrivateFile(req, res, row.file_path, row.content_version);
   }),
 );
 
@@ -313,8 +327,8 @@ inspirationRouter.get(
     const ctx = ctxOf(req);
     const row = loadAsset(req.params.id, ctx.libraryId);
     const target = row.thumb_path && fs.existsSync(row.thumb_path) ? row.thumb_path : row.file_path;
-    if (!fs.existsSync(target)) throw errors.notFound('图片文件');
-    res.sendFile(target);
+    // 缩略图跟随原图版本
+    sendPrivateFile(req, res, target, row.content_version);
   }),
 );
 
@@ -344,8 +358,50 @@ inspirationRouter.delete(
   ah(async (req, res) => {
     const ctx = ctxOf(req);
     const row = loadAsset(req.params.id, ctx.libraryId);
-    getDb().prepare('DELETE FROM asset WHERE id = ?').run(row.id);
+    const db = getDb();
+    db.prepare('DELETE FROM asset WHERE id = ?').run(row.id);
+    // 分享图随之失效；指纹 blob 若无其他引用则回收原图与缩略图
+    deleteShareImages(ctx.libraryId, row.id);
+    if (row.blob_id) releaseBlobIfOrphan(row.blob_id);
     ok(res, { deleted: true });
+  }),
+);
+
+/**
+ * 替换原图（文档 11.3）：新图走指纹管线（可能直接复用已有 blob），
+ * asset 元数据整体更新、content_version 自增，旧分享图与旧缓存立即失效。
+ */
+const replaceUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 40 * 1024 * 1024, files: 1 },
+});
+
+inspirationRouter.post(
+  '/assets/:id/replace',
+  replaceUpload.single('file'),
+  ah(async (req, res) => {
+    const ctx = ctxOf(req);
+    const row = loadAsset(req.params.id, ctx.libraryId);
+    const file = req.file as Express.Multer.File | undefined;
+    if (!file) throw errors.badRequest('没有收到文件');
+    if (!(file.mimetype ?? '').startsWith('image/')) throw errors.badRequest('只接受图片文件');
+
+    const inspiration = requireInspiration(row.inspiration_id, ctx.libraryId);
+    const spot = inspiration.spot_id ? loadSpotGeom(inspiration.spot_id) : null;
+    const result = await replaceAssetImage({
+      row,
+      buffer: file.buffer,
+      spot: spot ? { lat: spot.lat, lng: spot.lng, tz: spot.tz } : null,
+    });
+    touch(inspiration.id);
+    const updated = loadAsset(row.id, ctx.libraryId);
+    ok(res, {
+      changed: result.changed,
+      sha256: result.sha256,
+      reusedFingerprint: result.reusedFingerprint,
+      resumed: result.resumed,
+      item: toAssetDto(updated),
+    });
   }),
 );
 

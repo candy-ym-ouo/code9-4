@@ -81,6 +81,8 @@ export interface AssetDto {
   id: string;
   inspirationId: string;
   role: AssetRole;
+  /** 内容版本：替换原图后自增，URL 携带该值用于击穿缓存 */
+  contentVersion: number;
   width: number;
   height: number;
   shotAt: string | null;

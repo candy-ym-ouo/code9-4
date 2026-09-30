@@ -5,11 +5,17 @@ import { migrate, getDb } from './db.js';
 import { logger } from './logger.js';
 import { scanWindowsForAllLibraries } from './jobs/windowScan.js';
 import { dispatchForAllLibraries } from './jobs/dispatch.js';
+import { recoverInterruptedIngests } from './services/assets.js';
 
 export function bootstrap(): void {
   ensureDirs();
   const applied = migrate();
   if (applied.length) logger.info('数据库迁移已应用', { files: applied });
+
+  // 续跑：把上次进程中断在管线中途的图片处理补完（失败则等客户端重传，重传即续跑）
+  void recoverInterruptedIngests().catch((err) =>
+    logger.error('图片处理续跑失败', { error: String(err) }),
+  );
 
   const app = createApp();
   const server = app.listen(config.port, () => {

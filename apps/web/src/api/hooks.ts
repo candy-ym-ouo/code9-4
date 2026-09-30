@@ -277,6 +277,22 @@ export function useUploadAssets() {
   });
 }
 
+export interface ReplaceAssetResult {
+  changed: boolean;
+  sha256: string;
+  reusedFingerprint: boolean;
+  item: import('@flil/shared').AssetDto;
+}
+
+export function useReplaceAsset() {
+  const invalidate = useInvalidate(['inspiration', 'inspirations']);
+  return useMutation({
+    mutationFn: ({ assetId, file }: { assetId: string; file: File }) =>
+      upload<ReplaceAssetResult>(`/assets/${assetId}/replace`, [file]),
+    onSuccess: invalidate,
+  });
+}
+
 export function useSaveAnnotations() {
   const invalidate = useInvalidate(['inspiration']);
   return useMutation({

@@ -31,10 +31,12 @@ export interface SerializeContext {
 }
 
 export function toAssetDto(row: AssetRow): AssetDto {
+  const v = `v=${row.content_version}`;
   return {
     id: row.id,
     inspirationId: row.inspiration_id,
     role: row.role,
+    contentVersion: row.content_version,
     width: row.width,
     height: row.height,
     shotAt: row.shot_at,
@@ -48,8 +50,8 @@ export function toAssetDto(row: AssetRow): AssetDto {
     sunElevation: row.sun_elevation,
     sunAzimuth: row.sun_azimuth,
     weatherSnapshot: row.weather_snapshot ? parseJson(row.weather_snapshot, null) : null,
-    fileUrl: `/api/assets/${row.id}/file`,
-    thumbUrl: `/api/assets/${row.id}/thumb`,
+    fileUrl: `/api/assets/${row.id}/file?${v}`,
+    thumbUrl: `/api/assets/${row.id}/thumb?${v}`,
     createdAt: row.created_at,
   };
 }

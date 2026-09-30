@@ -47,7 +47,12 @@ export function requestLog(req: Request, res: Response, next: NextFunction): voi
 export function authenticate(required = true) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const header = req.header('authorization');
-    const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
+    let token = header?.startsWith('Bearer ') ? header.slice(7) : null;
+    // <img>/<a> 无法带 header：仅对 GET 的图片/缩略图请求放行 query token
+    if (!token && req.method === 'GET' && (req.path.endsWith('/file') || req.path.endsWith('/thumb'))) {
+      const q = req.query as Record<string, unknown>;
+      token = typeof q.token === 'string' ? q.token : null;
+    }
     if (!token) {
       if (required) {
         fail(res, errors.authRequired());
