@@ -20,7 +20,7 @@ import { getDb, parseJson, rowToBool } from '../db.js';
 import { config } from '../config.js';
 import { fuzzSpotCached, type PlaceRow, type SpotRow } from './fuzzing.js';
 import { loadTiming, timingRowToDto, windowSummary } from './windowEngine.js';
-import type { AssetRow } from './assets.js';
+import { assetVersion, type AssetRow } from './assets.js';
 
 export interface SerializeContext {
   libraryId: string;
@@ -31,6 +31,8 @@ export interface SerializeContext {
 }
 
 export function toAssetDto(row: AssetRow): AssetDto {
+  // v = 内容指纹短码：替换原图后 URL 立即变化，浏览器/CDN 不可能继续用旧缓存
+  const v = assetVersion(row);
   return {
     id: row.id,
     inspirationId: row.inspiration_id,
@@ -48,8 +50,8 @@ export function toAssetDto(row: AssetRow): AssetDto {
     sunElevation: row.sun_elevation,
     sunAzimuth: row.sun_azimuth,
     weatherSnapshot: row.weather_snapshot ? parseJson(row.weather_snapshot, null) : null,
-    fileUrl: `/api/assets/${row.id}/file`,
-    thumbUrl: `/api/assets/${row.id}/thumb`,
+    fileUrl: `/api/assets/${row.id}/file?v=${v}`,
+    thumbUrl: `/api/assets/${row.id}/thumb?v=${v}`,
     createdAt: row.created_at,
   };
 }
@@ -256,6 +258,12 @@ export function toAlbumDto(row: Record<string, unknown>): AlbumDto {
       "SELECT COUNT(*) AS n FROM album_gap WHERE album_id = ? AND is_required = 1 AND status = 'open'",
     )
     .get(albumId) as { n: number };
+  const cover = db
+    .prepare(
+      `SELECT a.* FROM album_item ai JOIN asset a ON a.inspiration_id = ai.inspiration_id
+       WHERE ai.album_id = ? ORDER BY ai.sort_order LIMIT 1`,
+    )
+    .get(albumId) as AssetRow | undefined;
 
   return {
     id: albumId,
@@ -265,7 +273,7 @@ export function toAlbumDto(row: Record<string, unknown>): AlbumDto {
     rules: parseJson(row.rules, {}),
     itemCount: item.n,
     openRequiredGaps: gaps.n,
-    coverThumbUrl: item.n > 0 ? `/api/albums/${albumId}/cover` : null,
+    coverThumbUrl: cover ? `/api/albums/${albumId}/cover?v=${assetVersion(cover)}` : null,
     publishedAt: (row.published_at as string | null) ?? null,
     updatedAt: row.updated_at as string,
   };

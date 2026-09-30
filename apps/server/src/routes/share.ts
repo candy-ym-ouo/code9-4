@@ -19,7 +19,8 @@ import {
 import { albumItemsDetailed, getSnapshot } from '../services/albums.js';
 import { requireInspiration } from '../services/inspirations.js';
 import { toInspirationDto } from '../services/serialization.js';
-import { shareImageFor, type AssetRow } from '../services/assets.js';
+import { shareImageFor, assetVersion, type AssetRow } from '../services/assets.js';
+import { sendImage } from '../http/sendImage.js';
 
 export const shareRouter = Router();
 export const publicShareRouter = Router();
@@ -123,6 +124,12 @@ function passwordFrom(req: { query: unknown; header: (n: string) => string | und
   return q.password ?? req.header('x-share-password') ?? null;
 }
 
+/** DTO 的 thumbUrl 已带内容版本号（?v=…），分享 URL 复用同一版本，替换原图后天然失效 */
+function versionOfAssetUrl(url: string): string {
+  const m = /[?&]v=([^&]+)/.exec(url);
+  return m ? m[1] : '0';
+}
+
 /**
  * 只读分享视图（无需登录）。
  * 输出中**只有模糊坐标**，并且每次请求都会重新校验撤销与过期（不接受缓存兜底）。
@@ -153,7 +160,7 @@ publicShareRouter.get(
           tags: i.tags,
           fuzz: i.spot?.fuzz ?? null,
           anchor: i.timing?.timeAnchor ?? null,
-          assets: i.assets.map((a) => ({ id: a.id, width: a.width, height: a.height, url: `/api/share/${link.token}/assets/${a.id}` })),
+          assets: i.assets.map((a) => ({ id: a.id, width: a.width, height: a.height, url: `/api/share/${link.token}/assets/${a.id}?v=${versionOfAssetUrl(a.thumbUrl)}` })),
         })),
         notice: '内容随时可能失效；地点已按分享级别模糊化。',
       });
@@ -173,7 +180,7 @@ publicShareRouter.get(
         tags: dto.tags,
         fuzz: dto.spot?.fuzz ?? null,
         anchor: dto.timing?.timeAnchor ?? null,
-        assets: dto.assets.map((a) => ({ id: a.id, width: a.width, height: a.height, url: `/api/share/${link.token}/assets/${a.id}` })),
+        assets: dto.assets.map((a) => ({ id: a.id, width: a.width, height: a.height, url: `/api/share/${link.token}/assets/${a.id}?v=${versionOfAssetUrl(a.thumbUrl)}` })),
       },
       notice: '内容随时可能失效；地点已按分享级别模糊化。',
     });
@@ -208,7 +215,11 @@ publicShareRouter.get(
     const target = await shareImageFor(asset, link.library_id);
     if (!fs.existsSync(target)) throw errors.notFound('图片文件');
     logAccess(link.id, true);
-    res.sendFile(target);
+    // 公开分享面：不允许任何共享缓存/离线缓存留存；每次都带着撤销校验回到服务端
+    sendImage(req, res, target, 'image/jpeg', assetVersion(asset), {
+      cacheControl: 'private, no-store',
+    });
+    res.setHeader('Pragma', 'no-cache');
   }),
 );
 

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import fs from 'node:fs';
 import { z } from 'zod';
 import { createAlbumSchema, type FuzzLevel } from '@flil/shared';
 import { getDb, newId, nowIso, toJson } from '../db.js';
@@ -26,6 +27,8 @@ import {
 } from '../services/albums.js';
 import { toAlbumDto } from '../services/serialization.js';
 import { createShareLink } from '../services/share.js';
+import { assetVersion } from '../services/assets.js';
+import { sendImage } from '../http/sendImage.js';
 
 export const albumRouter = Router();
 albumRouter.use(authenticate());
@@ -236,7 +239,9 @@ albumRouter.get(
     requireAlbum(req.params.id, ctx.libraryId);
     const asset = coverAsset(req.params.id);
     if (!asset) throw errors.notFound('封面图');
-    res.sendFile(asset.thumb_path ?? asset.file_path);
+    const thumbExists = Boolean(asset.thumb_path && fs.existsSync(asset.thumb_path));
+    const target = thumbExists ? asset.thumb_path! : asset.file_path;
+    sendImage(req, res, target, thumbExists ? 'image/webp' : asset.mime ?? 'image/jpeg', assetVersion(asset));
   }),
 );
 

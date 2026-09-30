@@ -34,7 +34,8 @@ import {
 } from '../services/inspirations.js';
 import { toAssetDto, toAnnotationDto, toInspirationDto, toSpotDto } from '../services/serialization.js';
 import type { SerializeContext } from '../services/serialization.js';
-import { ingestAsset, type AssetRow } from '../services/assets.js';
+import { ingestAsset, replaceAssetOriginal, deleteAssetFiles, assetVersion, type AssetRow } from '../services/assets.js';
+import { sendImage } from '../http/sendImage.js';
 import { clearFuzzCache, loadSpotRow } from '../services/fuzzing.js';
 import { loadSpotGeom } from '../services/windowEngine.js';
 import { azimuthAt, elevationAt, utcToZonedParts, zonedTimeToUtc } from '@flil/shared';
@@ -303,7 +304,8 @@ inspirationRouter.get(
     const ctx = ctxOf(req);
     const row = loadAsset(req.params.id, ctx.libraryId);
     if (!fs.existsSync(row.file_path)) throw errors.notFound('图片文件');
-    res.sendFile(row.file_path);
+    // 私有内容：浏览器可短缓存但必须随 URL 版本号失效（替换原图后 ?v= 立即变化）
+    sendImage(req, res, row.file_path, `image/${row.mime?.split('/')[1] ?? 'jpeg'}`, assetVersion(row));
   }),
 );
 
@@ -312,9 +314,33 @@ inspirationRouter.get(
   ah(async (req, res) => {
     const ctx = ctxOf(req);
     const row = loadAsset(req.params.id, ctx.libraryId);
-    const target = row.thumb_path && fs.existsSync(row.thumb_path) ? row.thumb_path : row.file_path;
+    const thumbExists = Boolean(row.thumb_path && fs.existsSync(row.thumb_path));
+    const target = thumbExists ? row.thumb_path! : row.file_path;
     if (!fs.existsSync(target)) throw errors.notFound('图片文件');
-    res.sendFile(target);
+    // 缩略图固定 webp；缩略图缺失回退原图时用原图自身 mime
+    sendImage(req, res, target, thumbExists ? 'image/webp' : row.mime ?? 'image/jpeg', assetVersion(row));
+  }),
+);
+
+/** 替换原图：新指纹重新加工缩略图/色板，旧分享图与旧缓存立即失效（文档 11.3 / 13.4） */
+inspirationRouter.post(
+  '/assets/:id/replace',
+  upload.single('file'),
+  ah(async (req, res) => {
+    const ctx = ctxOf(req);
+    const row = loadAsset(req.params.id, ctx.libraryId);
+    const file = req.file as Express.Multer.File | undefined;
+    if (!file) throw errors.badRequest('没有收到文件');
+    if (!(file.mimetype ?? '').startsWith('image/')) throw errors.badRequest('只接受图片文件');
+    const inspiration = requireInspiration(row.inspiration_id, ctx.libraryId);
+    const spot = inspiration.spot_id ? loadSpotGeom(inspiration.spot_id) : null;
+    const result = await replaceAssetOriginal({
+      row,
+      buffer: file.buffer,
+      spot: spot ? { lat: spot.lat, lng: spot.lng, tz: spot.tz } : null,
+    });
+    touch(row.inspiration_id);
+    ok(res, { item: toAssetDto(getDb().prepare('SELECT * FROM asset WHERE id = ?').get(row.id) as AssetRow), ...result });
   }),
 );
 
@@ -345,6 +371,8 @@ inspirationRouter.delete(
     const ctx = ctxOf(req);
     const row = loadAsset(req.params.id, ctx.libraryId);
     getDb().prepare('DELETE FROM asset WHERE id = ?').run(row.id);
+    // 先解绑 DB 引用，再按引用计数回收 blob 文件与该指纹的分享图
+    deleteAssetFiles(row);
     ok(res, { deleted: true });
   }),
 );

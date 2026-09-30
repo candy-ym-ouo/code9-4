@@ -277,6 +277,16 @@ export function useUploadAssets() {
   });
 }
 
+/** 替换原图：后端按新指纹重做缩略图/色板，并立即清掉旧分享图（标注保留） */
+export function useReplaceAsset() {
+  const invalidate = useInvalidate(['inspiration', 'inspirations']);
+  return useMutation({
+    mutationFn: ({ assetId, file }: { assetId: string; file: File }) =>
+      upload<{ item: { id: string } }>(`/assets/${assetId}/replace`, [file]),
+    onSuccess: invalidate,
+  });
+}
+
 export function useSaveAnnotations() {
   const invalidate = useInvalidate(['inspiration']);
   return useMutation({

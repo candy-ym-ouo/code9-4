@@ -70,8 +70,11 @@ export function upload<T>(path: string, files: File[], extra: Record<string, str
   return api<T>(path, { method: 'POST', body: form });
 }
 
-/** 图片 URL 需要携带鉴权（<img> 无法带 header，所以用查询参数） */
+/** 图片 URL 需要携带鉴权（<img> 无法带 header，所以用查询参数）。
+ *  路径本身可能已带内容版本号（?v=…），此时用 & 拼接，不能再用 ?。 */
 export function authedImageUrl(path: string): string {
   const token = useSession.getState().token;
-  return token ? `${BASE}${path}?token=${encodeURIComponent(token)}` : `${BASE}${path}`;
+  if (!token) return `${BASE}${path}`;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${BASE}${path}${sep}token=${encodeURIComponent(token)}`;
 }
